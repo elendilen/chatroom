@@ -1,6 +1,12 @@
-from core.chat_client import Chatclient
+import asyncio
+from core.chat_client import ChatClient
 
+async def main():
+    client = ChatClient(server_host='localhost', server_port=12345)
+    await client.run()
+        
 if __name__ == '__main__':
-    nickname = input("please choose your nickname: ")
-    client = Chatclient(nickname,server_host='localhost',server_port=12345)
-    client.start()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n客户端已退出")

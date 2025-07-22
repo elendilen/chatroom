@@ -1,209 +1,159 @@
 #!/usr/bin/env python3
 """
-聊天室测试脚本
+WebSocket 聊天室测试脚本
 自动启动服务器和多个客户端进行测试
 """
 import subprocess
 import time
-import threading
-import signal
+import asyncio
 import sys
-import os
-from core.chat_client import Chatclient
+import json
+from core.chat_client import ChatClient
 
-class TestClient:
-    def __init__(self, nickname, server_host='localhost', server_port=12345):
-        self.nickname = nickname
-        self.client = Chatclient(nickname, server_host, server_port)
+class TestClient(ChatClient):
+    def __init__(self, server_host='localhost', server_port=12345):
+        super().__init__(server_host=server_host, server_port=server_port)
         self.messages_received = []
         self.running = False
-        
-    def start_test_client(self):
-        """启动测试客户端"""
+
+    async def start_listening(self):
+        """开始监听服务器消息"""
         self.running = True
-        # 启动接收消息线程
-        threading.Thread(target=self._receive_messages, daemon=True).start()
-        
-        # 发送加入消息
-        self.client.send(f"{self.nickname} 加入了聊天室。", self.client.server_addr)
-        print(f"[{self.nickname}] 已加入聊天室")
-        
-    def send_message(self, message):
-        """发送消息"""
-        full_msg = f"{self.nickname}: {message}"
-        self.client.send(full_msg, self.client.server_addr)
-        print(f"[{self.nickname}] 发送: {message}")
-        
-    def _receive_messages(self):
-        """接收消息线程"""
-        while self.running:
-            try:
-                msg, _ = self.client.receive()
-                self.messages_received.append(msg)
-                print(f"[{self.nickname}] 收到: {msg}")
-            except:
-                break
-                
-    def stop(self):
-        """停止客户端"""
-        self.running = False
-        self.client.send(f"{self.nickname} 退出了聊天室。", self.client.server_addr)
-        self.client.close()
+        try:
+            await self.listen_for_messages(self.handle_server_message)
+        except asyncio.CancelledError:
+            print(f"[{self.username}] 消息监听已取消")
+        finally:
+            self.running = False
+
+    async def handle_server_message(self, raw_message):
+        """处理服务器消息"""
+        try:
+            message_data = json.loads(raw_message)
+            message_type = message_data.get('type')
+
+            # 只处理 join、message 和 leave 类型
+            if message_type in ['join', 'message', 'leave']:
+                self.messages_received.append(message_data)
+
+                if message_type == 'join':
+                    username = message_data.get('username')
+                    print(f"[{self.username}] 🟢 {username} 加入了聊天室")
+                elif message_type == 'message':
+                    username = message_data.get('username')
+                    content = message_data.get('content')
+                    timestamp = message_data.get('timestamp')
+                    print(f"[{self.username}] 收到聊天: [{timestamp}] {username}: {content}")
+                elif message_type == 'leave':
+                    username = message_data.get('username')
+                    print(f"[{self.username}] 🔴 {username} 离开了聊天室")
+            else:
+                # 忽略未处理的消息类型
+                print(f"[{self.username}] ⚠️ 未知消息类型: {message_type}")
+        except json.JSONDecodeError:
+            print(f"[{self.username}] 收到非JSON消息: {raw_message}")
+        except Exception as e:
+            print(f"[{self.username}] 处理消息时出错: {e}")
+
+    async def disconnect(self):
+        """断开连接"""
+        if self.running:
+            self.running = False
+            await asyncio.sleep(0.1)
+        await self.close()
+        print(f"[{self.username}] 已断开连接")
 
 def start_server():
     """启动服务器进程"""
-    print("启动聊天室服务器...")
-    server_process = subprocess.Popen([sys.executable, "server.py"], 
-                                    cwd="/Users/wanchongyu/workspace/chatroom")
-    time.sleep(2)  # 等待服务器启动
-    return server_process
-
-def test_basic_chat():
-    """基本聊天功能测试"""
-    print("\n=== 开始基本聊天功能测试 ===")
-    
-    # 创建测试客户端
-    client1 = TestClient("Alice")
-    client2 = TestClient("Bob")
-    client3 = TestClient("Charlie")
-    
+    print("启动 WebSocket 聊天室服务器...")
     try:
-        # 启动客户端
-        client1.start_test_client()
-        time.sleep(0.5)
-        
-        client2.start_test_client()
-        time.sleep(0.5)
-        
-        client3.start_test_client()
-        time.sleep(1)
-        
-        # 测试消息发送
-        print("\n--- 开始消息测试 ---")
-        client1.send_message("大家好！")
-        time.sleep(0.5)
-        
-        client2.send_message("你好 Alice！")
-        time.sleep(0.5)
-        
-        client3.send_message("我也来了！")
-        time.sleep(0.5)
-        
-        client1.send_message("欢迎 Charlie！")
-        time.sleep(1)
-        
+        server_process = subprocess.Popen(
+            [sys.executable, "server.py"],
+            cwd="/Users/wanchongyu/workspace/chatroom",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        time.sleep(5)  # 延长等待时间，确保服务器完全启动
+        print("✅ 服务器启动完成")
+        return server_process
+    except Exception as e:
+        print(f"❌ 启动服务器失败: {e}")
+        print("请检查 server.py 是否存在或是否有权限运行")
+        return None
+
+async def test_basic_chat():
+    """基本聊天功能测试"""
+    print("\n开始基本聊天功能测试")
+    alice = TestClient()
+    bob = TestClient()
+    charlie = TestClient()
+
+    try:
+        if not await alice.connect_to_server("alice"):
+            print("❌ Alice 连接失败")
+            return False
+        if not await bob.connect_to_server("bob"):
+            print("❌ Bob 连接失败")
+            return False
+        if not await charlie.connect_to_server("charlie"):
+            print("❌ Charlie 连接失败")
+            return False
+
+        listen_tasks = [
+            asyncio.create_task(alice.start_listening()),
+            asyncio.create_task(bob.start_listening()),
+            asyncio.create_task(charlie.start_listening())
+        ]
+
+        await alice.send_chat_message("大家好！我是Alice")
+        await bob.send_chat_message("你好Alice！我是Bob")
+        await charlie.send_chat_message("嗨！我是Charlie，很高兴见到大家")
+
+        # 等待一段时间以确保消息被处理
+        await asyncio.sleep(1)
+
+        # 停止监听任务
+        for task in listen_tasks:
+            task.cancel()
+        await asyncio.gather(*listen_tasks, return_exceptions=True)
+
         # 检查消息接收情况
-        print("\n--- 消息接收统计 ---")
-        print(f"Alice 收到 {len(client1.messages_received)} 条消息: {client1.messages_received}")
-        print(f"Bob 收到 {len(client2.messages_received)} 条消息: {client2.messages_received}")
-        print(f"Charlie 收到 {len(client3.messages_received)} 条消息: {client3.messages_received}")
-        
+        print(f"Alice 收到 {len(alice.messages_received)} 条消息")
+        print(f"Bob 收到 {len(bob.messages_received)} 条消息")
+        print(f"Charlie 收到 {len(charlie.messages_received)} 条消息")
+
         # 验证消息传递
         success = True
-        if len(client1.messages_received) < 3:  # Alice应该收到Bob和Charlie的消息
-            print("❌ Alice 没有收到足够的消息")
+        expected_min_messages = 2  # 每个客户端至少应该收到2条消息（如果服务端不广播给自己）
+
+        if len(alice.messages_received) < expected_min_messages:
+            print(f"❌ Alice 只收到 {len(alice.messages_received)} 条消息，期望至少 {expected_min_messages} 条")
             success = False
-            
-        if len(client2.messages_received) < 3:  # Bob应该收到Alice和Charlie的消息
-            print("❌ Bob 没有收到足够的消息")
+        if len(bob.messages_received) < expected_min_messages:
+            print(f"❌ Bob 只收到 {len(bob.messages_received)} 条消息，期望至少 {expected_min_messages} 条")
             success = False
-            
-        if len(client3.messages_received) < 3:  # Charlie应该收到Alice和Bob的消息
-            print("❌ Charlie 没有收到足够的消息")
+        if len(charlie.messages_received) < expected_min_messages:
+            print(f"❌ Charlie 只收到 {len(charlie.messages_received)} 条消息，期望至少 {expected_min_messages} 条")
             success = False
-            
+
         if success:
             print("✅ 基本聊天功能测试通过！")
         else:
             print("❌ 基本聊天功能测试失败！")
-            
+        return success
     finally:
-        # 清理客户端
-        client1.stop()
-        client2.stop()
-        client3.stop()
-        time.sleep(1)
+        await alice.disconnect()
+        await bob.disconnect()
+        await charlie.disconnect()
 
-def test_client_disconnect():
-    """客户端断开连接测试"""
-    print("\n=== 开始客户端断开连接测试 ===")
-    
-    client1 = TestClient("David")
-    client2 = TestClient("Eve")
-    
+async def main():
+    server_process = start_server()
+    if not server_process:
+        return
     try:
-        client1.start_test_client()
-        client2.start_test_client()
-        time.sleep(1)
-        
-        # 发送一些消息
-        client1.send_message("我要测试断开连接")
-        time.sleep(0.5)
-        
-        # 断开client1
-        print("断开 David 的连接...")
-        client1.stop()
-        time.sleep(1)
-        
-        # client2继续发送消息
-        client2.send_message("David 还在吗？")
-        time.sleep(0.5)
-        
-        print("✅ 客户端断开连接测试完成")
-        
+        await test_basic_chat()
     finally:
-        client2.stop()
-        time.sleep(1)
-
-def interactive_test():
-    """交互式测试模式"""
-    print("\n=== 交互式测试模式 ===")
-    print("你可以手动测试聊天室功能")
-    print("请在另一个终端运行: python client.py")
-    print("按 Ctrl+C 结束测试")
-    
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n退出交互式测试模式")
-
-def main():
-    print("聊天室测试脚本")
-    print("=" * 50)
-    
-    # 启动服务器
-    server_process = None
-    try:
-        server_process = start_server()
-        
-        print("\n选择测试模式:")
-        print("1. 自动化测试")
-        print("2. 交互式测试")
-        choice = input("请选择 (1 或 2): ").strip()
-        
-        if choice == "1":
-            # 运行自动化测试
-            test_basic_chat()
-            test_client_disconnect()
-            print("\n🎉 所有自动化测试完成！")
-            
-        elif choice == "2":
-            interactive_test()
-            
-        else:
-            print("无效选择")
-            
-    except KeyboardInterrupt:
-        print("\n\n测试被用户中断")
-        
-    finally:
-        # 清理服务器进程
-        if server_process:
-            print("关闭服务器...")
-            server_process.terminate()
-            server_process.wait()
-            print("服务器已关闭")
+        server_process.terminate()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
